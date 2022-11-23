@@ -8,12 +8,12 @@ class TravelingSalesman:
     def __init__(self, distanceMatrix) -> None:
         self.distanceMatrix = distanceMatrix
 
-        self.lambda_ = 200
-        self.mu = 400
+        self.lambda_ = 100
+        self.mu = 200
         self.K = 3
         self.p = 0.5
-        self.mutation_cnt = 10
-        self.elitism = 50
+        self.mutation_cnt = 20
+        self.elitism = 10
 
         self.meanObjective = 0
         self.meanObjectives = []
@@ -37,7 +37,6 @@ class TravelingSalesman:
 
             child = self.recombination(parents)
             child = self.swap_mutation(child)
-            
             children.append(child)
 
 
@@ -81,6 +80,7 @@ class TravelingSalesman:
         fitness = 0
 
         for i in range(len(ind) - 2):
+            #print(ind)
             dist = self.distanceMatrix[ind[i]][ind[i+1]]
 
             if dist == np.Inf:
@@ -96,7 +96,7 @@ class TravelingSalesman:
 
         return fitness
    
-    def initializePopulation(self) -> list:
+    def initializePopulation(self) -> list: # TODO add heuristic initialization
         """ Initializes the population to an array of random permutations starting with zero.
         """
         pop = []
@@ -151,8 +151,59 @@ class TravelingSalesman:
 
         return best_idx
     
-    def recombination(self, parents: Tuple):
-        return parents[0]
+    def recombination(self, parents: Tuple) -> np.ndarray:
+        """ Produces a child by performing order crossover on given parents.
+        
+        PARAMETERS
+        ----------
+        parents: two individuals which are to be recombined
+
+        RETURNS
+        -------
+        np.ndarray: individual created by recombining given parents
+        """
+
+        # initialize to zeros, first element is also automatically zero which is in accordance with the representation
+        child = np.zeros(len(parents[0]), dtype='int')
+
+        # choose two random crossover points
+        idx1 = np.random.choice(range(1, len(child)))
+        idx2 = np.random.choice(range(1, len(child)))
+
+        while idx1 == idx2:
+            idx2 = np.random.choice(range(1, len(child)))
+
+        # idx1 has to be smaller
+        if idx1 > idx2:
+            tmp = idx1
+            idx1 = idx2
+            idx2 = tmp
+
+        # copy fragment from first parent into child
+        child[idx1:idx2] = parents[0][idx1:idx2].copy()
+
+        # edges already in child
+        used = set(child)
+
+        idx_parent = idx2 - 1
+        idx_child = idx2
+
+        while len(used) < len(child):
+            idx_parent += 1 
+
+            if idx_parent >= len(child):
+                idx_parent = 1
+            if idx_child >= len(child):
+                idx_child = 1
+
+            if parents[1][idx_parent] in used: 
+                continue
+
+            child[idx_child] = parents[1][idx_parent].copy()
+            idx_child += 1
+            used.add(parents[1][idx_parent].copy())
+
+        return child
 
     def swap_mutation(self, ind: np.ndarray) -> np.ndarray:
         """ Performs swap mutation with probability <p>.
@@ -173,11 +224,11 @@ class TravelingSalesman:
 
         for i in range(n):
             if np.random.random() < self.p:
-                idx1 = np.random.choice(range(0, len(new_ind)))
-                idx2 = np.random.choice(range(0, len(new_ind)))
+                idx1 = np.random.choice(range(1, len(new_ind)))
+                idx2 = np.random.choice(range(1, len(new_ind)))
 
                 while idx1 == idx2:
-                    idx2 = np.random.choice(range(0, len(new_ind)))
+                    idx2 = np.random.choice(range(1, len(new_ind)))
 
                 tmp = new_ind[idx1]
                 new_ind[idx1] = new_ind[idx2]
@@ -185,7 +236,7 @@ class TravelingSalesman:
 
         return new_ind
 
-    def elimination(self, pop: list, pop_fitnesses: np.ndarray) -> list: # TODO dont allow duplicates
+    def elimination(self, pop: list, pop_fitnesses: np.ndarray) -> list: # TODO dont allow duplicates?
         """ Eliminates individuals so that the initial population size is retained.
         Individuals to retain are chosen with k-tournament.
         Elitism is performed.
@@ -228,7 +279,7 @@ class TravelingSalesman:
         -------
         bool: True if for the last (at least) 20 generations the best objective was the same, False otherwise        
         """
-        return self.convergenceCnt < 20
+        return self.convergenceCnt < 50
     
     def get_info(self):
         """ Gets information about the current population and stores it as member vairables.
