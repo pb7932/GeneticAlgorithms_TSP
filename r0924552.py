@@ -26,6 +26,7 @@ class r0924552:
             bestSolution = tsp.bestSolution
 
 			# Your code here.
+            print('mean: {} best: {}'.format(meanObjective, bestObjective))
 
 			# Call the reporter with:
 			#  - the mean objective function value of the population
