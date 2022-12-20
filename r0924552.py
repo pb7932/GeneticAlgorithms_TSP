@@ -41,6 +41,6 @@ class r0924552:
         return 0
 
 if __name__ == "__main__":
-    filename = "tours/tour50.csv"
+    filename = "tours/tour250.csv"
     alg = r0924552()
     alg.optimize(filename)

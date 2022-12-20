@@ -3,17 +3,31 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
+# benchmarks: 50: 66000, 100: 103000, 250: 405000, 500: 78000+, 750: 134000, 1000: 75000
+# TODO initialization
+# TODO local search
+# TODO recombination?
+# TODO mutation
+# TODO diversity promotion
+# ako je zadnjih 10 istih rjesenja onda napuni populaciju s novim slucajnim ind
 class TravelingSalesman:
 
     def __init__(self, distanceMatrix) -> None:
         self.distanceMatrix = distanceMatrix
 
         self.lambda_ = 100
-        self.mu = 200
-        self.K = 3
-        self.p = 0.5
-        self.mutation_cnt = 20
-        self.elitism = 10
+        self.mu = 4 * self.lambda_
+        self.heurCnt = int(0.1 * self.lambda_) # number of individuals to initialize heuristically
+        self.popCnt = 4 # number of populations in the island model
+        self.K = 3 # k in k-tournament
+        self.p = 0.3 # probability with which to mutate an individual
+        self.swap_mutation_cnt = 20 # maximum number of times to do swap mutation on an individual
+        self.insert_mutation_cnt = 3 # maximum number of times to do insert mutation on an individual
+        self.inversion_mutation_cnt = 2 # maximum number of times to do inversion mutation on an individual
+        self.scramble_mutation_cnt = 2 # maximum number of times to do scramble mutation on an individual
+        self.elitism = 20
+
+        self.cnt = 0
 
         self.meanObjective = 0
         self.meanObjectives = []
@@ -22,35 +36,112 @@ class TravelingSalesman:
         self.bestSolution = []
         self.convergenceCnt = 0
 
-        self.population = self.initializePopulation()
-        self.population_fitness = self.evaluation(self.population)
+
+        self.population = []
+        self.population_fitness = []
+
+        for i in range(self.popCnt):
+            pop = self.initializePopulationHeuristic(self.lambda_)
+            self.population.append(pop)
+            self.population_fitness.append(self.evaluation(pop))
+
 
     def optimize(self) -> None:
-        """ Main genetic algorithm loop.
+        """ Island model for a genetic algorithm with several different populations.
         """
-        start_time = time.time()
+
+        self.cnt = self.cnt + 1
+
+        meanObjs = []
+        bestObj = np.Infinity
+        bestSol = []
+
+        for i in range(self.popCnt):
+            (pop, pop_fitness) = self.optimize_pop(self.population[i], self.population_fitness[i], i+1)
+            self.population[i] = pop
+            self.population_fitness[i] = pop_fitness
+
+            (bestIndIdx, meanObjective) = self.get_info(pop, pop_fitness)
+
+            currBestObj = pop_fitness[bestIndIdx]
+            
+            if currBestObj < bestObj:
+                bestObj = currBestObj
+                bestSol = pop[bestIndIdx]
+
+            meanObjs.append(meanObjective)
+
+        if self.bestObjective == bestObj:
+            self.convergenceCnt += 1
+        else:
+            self.convergenceCnt = 0
+
+        self.meanObjective = np.mean(meanObjs)
+        self.meanObjectives.append(meanObjective)
+        self.bestObjective = bestObj
+        self.bestObjectives.append(bestObj)
+        self.bestSolution = bestSol
+
+        if self.cnt % 20 == 0:
+            self.mix_populations()
+
+
+    def optimize_pop(self, pop: list, pop_fitness: np.ndarray, mutation_type: int) -> None:
+        """ Main genetic algorithm loop for a single population
+
+        PARAMETERS
+        ----------
+        pop(list): population to perform the genetic algorithm on
+        pop_fitness(np.ndarray): array of fitnesses of the given population
+        mutation_type(int): represents a mutation method to use in the course of the genetic algorithm
+                            1 - insert mutation
+                            2 - inveres mutation
+                            3 - scramble mutation
+                            4 - swap mutation
+                            5 - each of the above with equal probability
+
+
+        RETURNS
+        -------
+        tuple: population and population fitness, respectively, after performing one loop of the genetic algorithm
+        """
+        #start_time = time.time()
 
         # create children from selected parents, mutate them and add them to the population
         children = []
         for i in range(self.mu):
-            parents = self.selection(self.population, self.population_fitness)
+            parents = self.selection(pop, pop_fitness)
 
-            child = self.recombination(parents)
-            child = self.swap_mutation(child)
+            child = self.order_recombination(parents)
+
+            match mutation_type:
+                case 1:
+                    child = self.insert_mutation(child)
+                case 2:
+                    child = self.inversion_mutation(child)
+                case 3: 
+                    child = self.scramble_mutation(child)
+                case 4:
+                    child = self.swap_mutation(child)
+            
             children.append(child)
 
-
         # eliminate individuals and evaluate them
-        self.population += children
-        new_fitnesses = self.evaluation(self.population)
-        self.population = self.elimination(self.population, new_fitnesses)
-        self.population_fitness = self.evaluation(self.population)
+        pop += children
+        new_fitnesses = self.evaluation(pop)
+        pop = self.elimination(pop, new_fitnesses)
+        pop_fitness = self.evaluation(pop)
 
-        self.get_info()
+        #self.get_info(pop, pop_fitness)
 
-        elapsed_time = time.time() - start_time
+        #elapsed_time = time.time() - start_time
         #print('elapsed time: ',elapsed_time)
 
+        return (pop, pop_fitness)
+
+    def mix_populations(self):
+        """ Exchanges individuals between populations in a random manner. """
+        pass
 
     def evaluation(self, pop: list) -> np.ndarray:
         """ Evaluates a given population.
@@ -79,8 +170,7 @@ class TravelingSalesman:
 
         fitness = 0
 
-        for i in range(len(ind) - 2):
-            #print(ind)
+        for i in range(len(ind) - 1):
             dist = self.distanceMatrix[ind[i]][ind[i+1]]
 
             if dist == np.Inf:
@@ -90,23 +180,81 @@ class TravelingSalesman:
         
         dist = self.distanceMatrix[ind[-1]][ind[0]]
         if dist == np.Inf:
-            fitness += 10000
+            fitness += 100000
         else:
             fitness += dist
 
         return fitness
    
-    def initializePopulation(self) -> list: # TODO add heuristic initialization
+    def initializePopulation(self, n) -> list: # TODO add heuristic initialization
         """ Initializes the population to an array of random permutations starting with zero.
+
+        PARAMETERS
+        ----------
+        n: int
+            size of the population
         """
         pop = []
 
-        while len(pop) < self.lambda_:
+        while len(pop) < n:
             ind = np.array([0])
             ind = np.append(ind, np.random.permutation(np.arange(1, len(self.distanceMatrix))))
             pop.append(ind)
 
         return pop
+
+    def initializePopulationHeuristic(self, n: int) -> list:
+        """ Initializes the population to an array of random individuals starting with zero. 
+        
+        A predefined number of those inidividuals are heuristically initialized with the heuristic being the shortest neighbour.
+
+        PARAMETERS
+        ----------
+        n: int
+            size of the population
+        """
+
+        pop = []
+        nodes = set(range(0, len(self.distanceMatrix)))
+
+        for i in range(self.heurCnt):
+            ind = [0]
+            ind.append(int(np.random.choice(range(1,len(self.distanceMatrix)))))
+           
+            used = set(ind.copy())
+            
+            for j in range(len(self.distanceMatrix)-2):
+                if (j % 3 == 0):
+                    node = self.nearestNeighbour(ind[-1], used)
+                else:
+                    node = self.nearestNeighbour(ind[-1], used)
+                    #node = np.random.choice(list(nodes.difference(used)))
+
+                used.add(node)
+                ind.append(node)
+
+            pop.append(np.array(ind))
+
+        print(pop)
+        pop.extend(self.initializePopulation(n - self.heurCnt))
+
+        return pop
+        
+    
+    def nearestNeighbour(self, node: int, used: set):
+        """ Finds the nearest neighbour of the given node not including the set of used nodes.
+        """
+
+        nearestN = 0
+        minDist = np.Infinity
+
+        for i in range(len(self.distanceMatrix)):
+            if(i not in used and i != node and self.distanceMatrix[node][i] <= minDist):
+                nearestN = i
+                minDist = self.distanceMatrix[node][i]
+
+        return nearestN
+
 
     def selection(self, pop: list, pop_fitness: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """ Performs K-tournament selection 
@@ -151,7 +299,7 @@ class TravelingSalesman:
 
         return best_idx
     
-    def recombination(self, parents: Tuple) -> np.ndarray:
+    def order_recombination(self, parents: Tuple) -> np.ndarray:
         """ Produces a child by performing order crossover on given parents.
         
         PARAMETERS
@@ -205,6 +353,68 @@ class TravelingSalesman:
 
         return child
 
+    def edge_recombination(self, parents:Tuple):
+        """ Produces a child by performing edge crossover on given parents.
+        
+        PARAMETERS
+        ----------
+        parents: two individuals which are to be recombined
+
+        RETURNS
+        -------
+        np.ndarray: individual created by recombining given parents
+        """
+      
+        parent1, parent2 = parents[0], parents[1]#pop[pair[0]], pop[pair[1]]
+        child = []
+        adj_li = [[] for _ in parent1]
+        for idx in range(len(parent1)):
+            after_idx = idx + 1 if idx + 1 < len(parent1) else 0
+            adj_li[parent1[idx]] += [parent1[idx - 1], parent1[after_idx]]
+            adj_li[parent2[idx]] += [parent2[idx - 1], parent2[after_idx]]
+
+        next_elem = 0
+
+        for _ in parent1:
+            child.append(next_elem)
+            if len(child) == len(parent1):
+                break
+            self.rm_from_adj_li(adj_li, next_elem)
+            next_elem = self.pick_next_elem(adj_li, child[-1])
+            if next_elem is None:
+                next_elem = np.random.choice(np.setdiff1d(parent1, child))
+
+        return np.array(child)
+
+
+    def pick_next_elem(self, adj_li, current):
+        # Pick doubles
+        if len(adj_li[current]) == 0:
+            return None
+        if len(adj_li[current]) != len(set(adj_li[current])):
+            edges = adj_li[current]
+            dups = [n for n in edges if edges.count(n) > 1]
+            return dups[0]
+        lens = [len(adj_li[elem]) for elem in adj_li[current]]
+        min = np.argmin(lens)
+        if len(lens) != len(set(lens)):
+            choices = [n for n in adj_li[current] if len(adj_li[n]) == lens[min]]
+            return np.random.choice(choices)
+        return adj_li[current][min]
+
+
+    def rm_from_adj_li(self, adj_li, item):
+        for li in adj_li:
+            keep_removing = True
+            while keep_removing:
+                keep_removing = False
+                for _ in li:
+                    try:
+                        li.remove(item)
+                        keep_removing= True
+                    except ValueError:
+                        pass
+
     def swap_mutation(self, ind: np.ndarray) -> np.ndarray:
         """ Performs swap mutation with probability <p>.
 
@@ -220,7 +430,7 @@ class TravelingSalesman:
         """
 
         new_ind = ind.copy()
-        n = int(np.random.random() * self.mutation_cnt + 1)
+        n = int(np.random.random() * self.swap_mutation_cnt + 1)
 
         for i in range(n):
             if np.random.random() < self.p:
@@ -235,6 +445,76 @@ class TravelingSalesman:
                 new_ind[idx2] = tmp
 
         return new_ind
+
+    def scramble_mutation(self, ind: np.ndarray) -> np.ndarray:
+        """ Performs scramble mutation on the given individual. 
+        """
+
+        for i in range(self.scramble_mutation_cnt):
+            idx1 = np.random.choice(range(1, len(ind)))
+            idx2 = np.random.choice(range(1, len(ind)))
+
+            while idx1 == idx2:
+                    idx2 = np.random.choice(range(1, len(ind)))
+
+            if(idx1 > idx2):
+                tmp = idx1
+                idx1 = idx2
+                idx2 = tmp
+
+            ind[idx1:idx2] = np.random.permutation(ind[idx1:idx2])
+             
+        return ind
+
+     
+    def insert_mutation(self, ind: np.ndarray) -> np.ndarray:
+        """ Performs insert mutation on the given individual. 
+        """
+
+        n = int(np.random.random() * self.insert_mutation_cnt + 1)
+        
+        for i in range(n):
+            idx1 = np.random.choice(range(1, len(ind)))
+            idx2 = np.random.choice(range(1, len(ind)))
+
+            while idx1 == idx2:
+                    idx2 = np.random.choice(range(1, len(ind)))
+
+            if(idx1 > idx2):
+                tmp = idx1
+                idx1 = idx2
+                idx2 = tmp
+
+            tmp = ind[idx1 + 1:idx2].copy()
+            ind[idx1 + 1] = ind[idx2]
+            ind[idx1 + 2:idx2 + 1] = tmp
+        
+        return ind
+
+
+    def inversion_mutation(self, ind: np.ndarray) -> np.ndarray:
+        """ Performs inversion mutation on the given individual. 
+        """
+
+        n = int(np.random.random() * self.inversion_mutation_cnt + 1)
+        
+        for i in range(n):
+            idx1 = np.random.choice(range(1, len(ind)))
+            idx2 = np.random.choice(range(1, len(ind)))
+
+            while idx1 == idx2:
+                    idx2 = np.random.choice(range(1, len(ind)))
+
+            if(idx1 > idx2):
+                tmp = idx1
+                idx1 = idx2
+                idx2 = tmp
+
+            ind[idx1:idx2+1] = np.flip(ind[idx1:idx2+1])
+        
+        return ind
+
+              
 
     def elimination(self, pop: list, pop_fitnesses: np.ndarray) -> list: # TODO dont allow duplicates?
         """ Eliminates individuals so that the initial population size is retained.
@@ -279,25 +559,38 @@ class TravelingSalesman:
         -------
         bool: True if for the last (at least) 20 generations the best objective was the same, False otherwise        
         """
-        return self.convergenceCnt < 50
+        return self.convergenceCnt < 20
     
-    def get_info(self):
+    def get_info(self, pop: list, pop_fitness: np.ndarray):
         """ Gets information about the current population and stores it as member vairables.
+
+        PARAMETERS
+        ----------
+        pop(list): population to perform the genetic algorithm on
+        pop_fitness(np.ndarray): array of fitnesses of the given population
+
+        RETURNS
+        -------
+        int: index of the best individual determined by the given population fitnesses        
         """
 
-        self.meanObjective = np.sum(self.population_fitness) / self.lambda_
-        self.meanObjectives.append(self.meanObjective)
+        #self.meanObjective = np.sum(pop_fitness) / self.lambda_
+        # self.meanObjectives.append(self.meanObjective)
+        meanObjective = np.sum(pop_fitness) / self.lambda_
 
-        bestIndIdx = np.argmin(self.population_fitness)
+        bestIndIdx = np.argmin(pop_fitness)
 
-        if self.bestObjective == self.population_fitness[bestIndIdx]:
-            self.convergenceCnt += 1
-        else:
-            self.convergenceCnt = 0
+        # if self.bestObjective == pop_fitness[bestIndIdx]:
+        #     self.convergenceCnt += 1
+        # else:
+        #     self.convergenceCnt = 0
 
-        self.bestObjective = self.population_fitness[bestIndIdx]
-        self.bestObjectives.append(self.bestObjective)
-        self.bestSolution = self.population[bestIndIdx]
+ 
+        # self.bestObjective = pop_fitness[bestIndIdx]
+        # self.bestObjectives.append(self.bestObjective)
+        # self.bestSolution = pop[bestIndIdx]
+
+        return (bestIndIdx, meanObjective)
 
     def plotObjective(self):
         """ Plots the mean and best with respect to time.
