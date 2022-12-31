@@ -1,9 +1,10 @@
 from typing import Tuple
+from numba import jit
 import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-# benchmarks: 50: 66000, 100: 103000, 250: 405000, 500: 78000+, 750: 134000, 1000: 75000
+
 # TODO initialization
 # TODO local search
 # TODO recombination?
@@ -15,22 +16,29 @@ class TravelingSalesman:
     def __init__(self, distanceMatrix) -> None:
         self.distanceMatrix = distanceMatrix
 
-        self.lambda_ = 100
-        self.mu = 4 * self.lambda_
-        self.heurCnt = int(0.1 * self.lambda_) # number of individuals to initialize heuristically
-        self.popCnt = 4 # number of populations in the island model
-        self.K = 3 # k in k-tournament
+        self.lambda_ = 40
+        self.mu = 2 * self.lambda_
+        self.heurCnt = int(0.2 * self.lambda_) # number of individuals to initialize heuristically
+        self.popCnt = 3 # number of populations in the island model
+        self.mutation_types = [2,4,5,3,5]
+        self.K = 4 # k in k-tournament
         self.p = 0.3 # probability with which to mutate an individual
-        self.swap_mutation_cnt = 20 # maximum number of times to do swap mutation on an individual
+        if len(self.distanceMatrix < 500):
+            self.swap_mutation_cnt = 5 # maximum number of times to do swap mutation on an individual 
+            self.inversion_mutation_cnt = 3 # maximum number of times to do inversion mutation on an individual 
+        else:
+            self.swap_mutation_cnt = 15 # maximum number of times to do swap mutation on an individual 
+            self.inversion_mutation_cnt = 8 # maximum number of times to do inversion mutation on an individual 
         self.insert_mutation_cnt = 3 # maximum number of times to do insert mutation on an individual
-        self.inversion_mutation_cnt = 2 # maximum number of times to do inversion mutation on an individual
         self.scramble_mutation_cnt = 2 # maximum number of times to do scramble mutation on an individual
-        self.elitism = 20
+        self.elitism = 2
 
         self.cnt = 0
+        self.population_mix_cnt = int(0.05 * self.lambda_)
 
         self.meanObjective = 0
         self.meanObjectives = []
+        self.stdObjectives = []
         self.bestObjective = 0
         self.bestObjectives = []
         self.bestSolution = []
@@ -41,7 +49,7 @@ class TravelingSalesman:
         self.population_fitness = []
 
         for i in range(self.popCnt):
-            pop = self.initializePopulationHeuristic(self.lambda_)
+            pop = self.initializePopulationHeuristic2(self.lambda_)
             self.population.append(pop)
             self.population_fitness.append(self.evaluation(pop))
 
@@ -57,7 +65,7 @@ class TravelingSalesman:
         bestSol = []
 
         for i in range(self.popCnt):
-            (pop, pop_fitness) = self.optimize_pop(self.population[i], self.population_fitness[i], i+1)
+            (pop, pop_fitness) = self.optimize_pop(self.population[i], self.population_fitness[i], self.mutation_types[i])
             self.population[i] = pop
             self.population_fitness[i] = pop_fitness
 
@@ -71,18 +79,21 @@ class TravelingSalesman:
 
             meanObjs.append(meanObjective)
 
+        # keep track of convergence
         if self.bestObjective == bestObj:
             self.convergenceCnt += 1
         else:
             self.convergenceCnt = 0
 
+        # update stats
         self.meanObjective = np.mean(meanObjs)
         self.meanObjectives.append(meanObjective)
         self.bestObjective = bestObj
         self.bestObjectives.append(bestObj)
         self.bestSolution = bestSol
+        self.stdObjectives.append(np.std(meanObjs))
 
-        if self.cnt % 20 == 0:
+        if self.cnt % 10 == 0:
             self.mix_populations()
 
 
@@ -95,7 +106,7 @@ class TravelingSalesman:
         pop_fitness(np.ndarray): array of fitnesses of the given population
         mutation_type(int): represents a mutation method to use in the course of the genetic algorithm
                             1 - insert mutation
-                            2 - inveres mutation
+                            2 - inverse mutation
                             3 - scramble mutation
                             4 - swap mutation
                             5 - each of the above with equal probability
@@ -109,27 +120,45 @@ class TravelingSalesman:
 
         # create children from selected parents, mutate them and add them to the population
         children = []
+
         for i in range(self.mu):
             parents = self.selection(pop, pop_fitness)
 
             child = self.order_recombination(parents)
 
-            match mutation_type:
-                case 1:
-                    child = self.insert_mutation(child)
-                case 2:
-                    child = self.inversion_mutation(child)
-                case 3: 
-                    child = self.scramble_mutation(child)
-                case 4:
-                    child = self.swap_mutation(child)
-            
+            if np.random.random() < self.p:
+                match mutation_type:
+                    case 1:
+                        child = self.insert_mutation(child, self.insert_mutation_cnt)
+                    case 2:
+                        child = self.inversion_mutation(child, self.inversion_mutation_cnt)
+                    case 3: 
+                        child = self.scramble_mutation(child)
+                    case 4:
+                        child = self.swap_mutation(child, self.swap_mutation_cnt)
+               
             children.append(child)
+
 
         # eliminate individuals and evaluate them
         pop += children
-        new_fitnesses = self.evaluation(pop)
-        pop = self.elimination(pop, new_fitnesses)
+        
+        new_fitness = self.evaluation(pop)
+
+        if len(self.distanceMatrix < 250):
+            new_fitness = self.fitnessWrapper(pop,new_fitness)
+
+        pop = self.elimination(pop, new_fitness)
+
+        # local search operator
+        new_pop = []
+        for ind in pop:
+            ind = self.lso(ind)
+            ind_fitness = self.objectiveValue(ind)
+            new_pop.append(ind)
+
+        pop = new_pop
+        
         pop_fitness = self.evaluation(pop)
 
         #self.get_info(pop, pop_fitness)
@@ -141,7 +170,54 @@ class TravelingSalesman:
 
     def mix_populations(self):
         """ Exchanges individuals between populations in a random manner. """
-        pass
+        # uzmi random ind iz dvije populacije i pomjesaj ih, moras zamjenit i pop_fitness
+        # uzmi sve parove svih populacija
+
+        for i in range(len(self.population)):
+            for j in range(len(self.population)):
+                if i >= j: continue
+
+                indices = np.random.permutation(range(1, self.lambda_))
+
+                for k in range(self.population_mix_cnt):
+                    idx = indices[k]
+                    
+                    # get random individuals
+                    ind1 = self.population[i][idx]
+                    ind2 = self.population[j][idx]
+
+                    # recombine them
+                    child1 = self.order_recombination((ind1,ind2))
+                    child2 = self.order_recombination((ind2,ind1))
+                    
+                    # add the children into populations
+                    self.population[i][idx] = child1
+                    self.population[j][idx] = child2
+
+
+                    # compute their fitnesses
+                    self.population_fitness[i][idx] = self.objectiveValue(child1)
+                    self.population_fitness[j][idx] = self.objectiveValue(child2)
+
+    def lso(self, ind: np.ndarray) -> np.ndarray:
+        """ Uses inversion mutation as a local search operator. (2-opt) - some research papers state this one has the best performance
+        """
+
+        best_ind = ind.copy()
+        best_ind_fitness = self.objectiveValue(best_ind)
+
+        for i in range(50):
+            new_ind = ind.copy()
+            new_ind = self.inversion_mutation(new_ind, 1)
+            new_ind_fitness = self.objectiveValue(new_ind)
+
+            if (new_ind_fitness < best_ind_fitness):
+                best_ind = new_ind
+                best_ind_fitness = new_ind_fitness
+
+        return best_ind
+            
+
 
     def evaluation(self, pop: list) -> np.ndarray:
         """ Evaluates a given population.
@@ -158,12 +234,12 @@ class TravelingSalesman:
         scores = []
 
         for i in range(len(pop)):
-            score = self.getFitnessOfIndividual(pop[i])
+            score = self.objectiveValue(pop[i])
             scores.append(score)
         
         return np.array(scores)
 
-    def getFitnessOfIndividual(self, ind: np.ndarray) -> float:
+    def objectiveValue(self, ind: np.ndarray) -> float:
         """ Calculates and returns a fitness of the given inidivdual. 
             Fitness is the sum of distances between cities in the path represented by the inidividual.
         """
@@ -174,19 +250,19 @@ class TravelingSalesman:
             dist = self.distanceMatrix[ind[i]][ind[i+1]]
 
             if dist == np.Inf:
-                fitness += 100000
+                fitness += 1000000
             else:
                 fitness += dist
         
         dist = self.distanceMatrix[ind[-1]][ind[0]]
         if dist == np.Inf:
-            fitness += 100000
+            fitness += 1000000
         else:
             fitness += dist
 
         return fitness
    
-    def initializePopulation(self, n) -> list: # TODO add heuristic initialization
+    def initializePopulation(self, n) -> list: 
         """ Initializes the population to an array of random permutations starting with zero.
 
         PARAMETERS
@@ -200,6 +276,28 @@ class TravelingSalesman:
             ind = np.array([0])
             ind = np.append(ind, np.random.permutation(np.arange(1, len(self.distanceMatrix))))
             pop.append(ind)
+
+        return pop
+
+    def initializePopulationHeuristic2(self, n:int) -> list:
+        pop = []
+        ind = [0]
+        used = set(ind.copy())
+            
+        for j in range(len(self.distanceMatrix)-1):
+            node = self.nearestNeighbour(ind[-1], used)
+            used.add(node)
+            ind.append(node)
+
+        # pop.append(np.array(ind))
+
+        for i in range(self.heurCnt+1):
+            new_ind = ind.copy()
+            new_ind = self.swap_mutation(new_ind,40)
+            pop.append(np.asarray(new_ind))
+
+        print(pop)
+        pop.extend(self.initializePopulation(n - self.heurCnt))
 
         return pop
 
@@ -220,15 +318,15 @@ class TravelingSalesman:
         for i in range(self.heurCnt):
             ind = [0]
             ind.append(int(np.random.choice(range(1,len(self.distanceMatrix)))))
+
            
             used = set(ind.copy())
             
             for j in range(len(self.distanceMatrix)-2):
-                if (j % 3 == 0):
-                    node = self.nearestNeighbour(ind[-1], used)
+                if (j % 10 == 0):
+                    node = np.random.choice(list(nodes.difference(used)))
                 else:
                     node = self.nearestNeighbour(ind[-1], used)
-                    #node = np.random.choice(list(nodes.difference(used)))
 
                 used.add(node)
                 ind.append(node)
@@ -293,12 +391,46 @@ class TravelingSalesman:
         best_idx = -1
 
         for i in k_tournament:
-            if(best_score > pop_fitness[i]):
-                best_score = pop_fitness[i]
+            ind_fitness = pop_fitness[i]
+            
+            if(best_score >ind_fitness):
+                best_score = ind_fitness
                 best_idx = i
 
         return best_idx
-    
+
+    def getEdgesOfIndividual(self, ind: np.ndarray) -> list:
+        edges = []
+        for i in range(len(ind)-1):
+            edges.append((ind[i],ind[i+1]))
+
+    def fitnessWrapper(self, pop, pop_fitness):
+        popEdges = []
+
+        for ind in pop:
+            popEdges.append(self.getEdgesOfIndividual(ind))
+
+        alpha = 0.5
+        sigma = len(self.distanceMatrix) / 3
+
+        mod_fitness = []
+        for i in range(len(pop)):
+            onePlusBeta = 0
+
+            for j in range(len(pop)):
+                dist = self.distance(i, j, pop, popEdges)
+
+                if dist <= sigma:
+                    onePlusBeta += 1 - (dist/sigma)**alpha
+                
+            mod_fitness.append(pop_fitness[i] * onePlusBeta)
+
+        return mod_fitness
+
+    def distance(self, idx1: int, idx2: int, pop, popEdges):
+        """ Number of not common edges between two individuals. """
+        return len(np.setdiff1d(popEdges[idx1], popEdges[idx2]))
+
     def order_recombination(self, parents: Tuple) -> np.ndarray:
         """ Produces a child by performing order crossover on given parents.
         
@@ -415,7 +547,7 @@ class TravelingSalesman:
                     except ValueError:
                         pass
 
-    def swap_mutation(self, ind: np.ndarray) -> np.ndarray:
+    def swap_mutation(self, ind: np.ndarray, mutation_cnt: int) -> np.ndarray:
         """ Performs swap mutation with probability <p>.
 
         Two indices are chosen at random and values at those indices are swapped.
@@ -423,28 +555,27 @@ class TravelingSalesman:
         PARAMETERS
         ----------
         ind: individual of the population
+        mutation_cnt: maximum number of times to do the swap mutation
 
         RETURN
         ------
         np.ndarray: mutated individual
         """
 
-        new_ind = ind.copy()
-        n = int(np.random.random() * self.swap_mutation_cnt + 1)
+        n = int(np.random.random() * mutation_cnt + 1)
 
         for i in range(n):
-            if np.random.random() < self.p:
-                idx1 = np.random.choice(range(1, len(new_ind)))
-                idx2 = np.random.choice(range(1, len(new_ind)))
+            idx1 = np.random.choice(range(1, len(ind)))
+            idx2 = np.random.choice(range(1, len(ind)))
 
-                while idx1 == idx2:
-                    idx2 = np.random.choice(range(1, len(new_ind)))
+            while idx1 == idx2:
+                idx2 = np.random.choice(range(1, len(ind)))
 
-                tmp = new_ind[idx1]
-                new_ind[idx1] = new_ind[idx2]
-                new_ind[idx2] = tmp
+            tmp = ind[idx1]
+            ind[idx1] = ind[idx2]
+            ind[idx2] = tmp
 
-        return new_ind
+        return ind
 
     def scramble_mutation(self, ind: np.ndarray) -> np.ndarray:
         """ Performs scramble mutation on the given individual. 
@@ -467,11 +598,11 @@ class TravelingSalesman:
         return ind
 
      
-    def insert_mutation(self, ind: np.ndarray) -> np.ndarray:
+    def insert_mutation(self, ind: np.ndarray, mutation_cnt: int) -> np.ndarray:
         """ Performs insert mutation on the given individual. 
         """
 
-        n = int(np.random.random() * self.insert_mutation_cnt + 1)
+        n = int(np.random.random() * mutation_cnt + 1)
         
         for i in range(n):
             idx1 = np.random.choice(range(1, len(ind)))
@@ -481,22 +612,26 @@ class TravelingSalesman:
                     idx2 = np.random.choice(range(1, len(ind)))
 
             if(idx1 > idx2):
-                tmp = idx1
-                idx1 = idx2
-                idx2 = tmp
-
-            tmp = ind[idx1 + 1:idx2].copy()
-            ind[idx1 + 1] = ind[idx2]
-            ind[idx1 + 2:idx2 + 1] = tmp
+                tmp = ind[idx2 + 1:idx1].copy()
+                ind[idx1-1] = ind[idx2]
+                ind[idx2:idx1-1] = tmp
+                # tmp = idx1
+                # idx1 = idx2
+                # idx2 = tmp
+            else:
+                tmp = ind[idx1 + 1:idx2].copy()
+                ind[idx1 + 1] = ind[idx2]
+                ind[idx1 + 2:idx2 + 1] = tmp
         
         return ind
 
 
-    def inversion_mutation(self, ind: np.ndarray) -> np.ndarray:
+    def inversion_mutation(self, ind: np.ndarray, mutation_cnt: int) -> np.ndarray:
         """ Performs inversion mutation on the given individual. 
         """
 
-        n = int(np.random.random() * self.inversion_mutation_cnt + 1)
+        new_ind = ind.copy()
+        n = int(np.random.random() * mutation_cnt + 1)
         
         for i in range(n):
             idx1 = np.random.choice(range(1, len(ind)))
@@ -559,7 +694,7 @@ class TravelingSalesman:
         -------
         bool: True if for the last (at least) 20 generations the best objective was the same, False otherwise        
         """
-        return self.convergenceCnt < 20
+        return self.convergenceCnt < 30
     
     def get_info(self, pop: list, pop_fitness: np.ndarray):
         """ Gets information about the current population and stores it as member vairables.
